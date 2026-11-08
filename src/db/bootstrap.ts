@@ -30,7 +30,7 @@ export function ensureReady(): Promise<void> {
 
 async function ensureInitialPlans() {
   const db = await getDb();
-  await db.insert(permissions).values(PERMISSION_CATALOG).onConflictDoNothing();
+  await db.insert(permissions).values([...PERMISSION_CATALOG]).onConflictDoNothing();
   await db.insert(subscriptionPlans).values([
     { name: "Free", description: "الأساسيات لإدارة النشاط والبدء باستخدام حساب ذكي.", monthlyPriceMinor: 0n, yearlyPriceMinor: 0n, trialDays: 0, maxUsers: 1, maxProducts: 100, storageLimitMb: 250, features: { dashboard: true, products: true, inventory: true, pos: true, reports: true } },
     { name: "Plus", description: "إدارة متقدمة للمخزون والعملاء والمزامنة السحابية.", monthlyPriceMinor: 0n, yearlyPriceMinor: 0n, trialDays: 7, maxUsers: 5, maxProducts: 0, storageLimitMb: 5000, features: { dashboard: true, products: true, inventory: true, pos: true, purchases: true, customers: true, customer_debts: true, suppliers: true, supplier_debts: true, expenses: true, cashbox: true, invoices: true, stocktaking: true, reports: true, barcode: true, cloud_sync: true, pdf_invoices: true } },

@@ -27,9 +27,11 @@ flutter run --dart-define=API_BASE_URL=https://api.example.com
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
+- optional `HISAB_OFFLINE_AUTH_POLICY`: `cached-credentials` (default), `cached-session`, or `require-online`
 
 ```powershell
 $env:HISAB_API_BASE_URL = 'https://api.example.com'
+$env:HISAB_OFFLINE_AUTH_POLICY = 'cached-credentials'
 .\build-production.ps1
 ```
 

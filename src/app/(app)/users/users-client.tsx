@@ -309,7 +309,7 @@ export function UsersClient() {
       >
         <form id="permissions-form" onSubmit={savePermissions} className="space-y-4">
           <p className="text-xs leading-5 text-ink-500">تظهر هنا الصلاحيات المتاحة في باقة المؤسسة والميزات التي فعّلها مالك المنصة. تحديد الصلاحية يسمح لهذا المستخدم باستخدام القسم والعمليات المرتبطة بها.</p>
-          {Object.entries((data?.availablePermissions ?? []).reduce<Record<string, typeof data.availablePermissions>>((groups, permission) => {
+          {Object.entries((data?.availablePermissions ?? []).reduce<Record<string, Payload["availablePermissions"]>>((groups, permission) => {
             (groups[permission.groupAr] ??= []).push(permission);
             return groups;
           }, {})).map(([group, permissions]) => (

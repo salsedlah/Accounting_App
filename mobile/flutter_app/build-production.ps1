@@ -46,6 +46,9 @@ $offlineAuthPolicy = $env:HISAB_OFFLINE_AUTH_POLICY
 if ([string]::IsNullOrWhiteSpace($offlineAuthPolicy)) {
   $offlineAuthPolicy = 'cached-credentials'
 }
+if ($offlineAuthPolicy -notin @('cached-credentials', 'cached-session', 'require-online')) {
+  throw 'HISAB_OFFLINE_AUTH_POLICY must be cached-credentials, cached-session, or require-online.'
+}
 
 Push-Location $PSScriptRoot
 try {
