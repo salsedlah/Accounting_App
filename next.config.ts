@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   serverExternalPackages: ["@electric-sql/pglite", "pg", "pdfkit"],
   outputFileTracingIncludes: {
-    "/api/**": ["./public/fonts/**"],
+    "/api/**": ["./public/fonts/**", "./node_modules/pdfkit/js/data/**"],
   },
 };
 
