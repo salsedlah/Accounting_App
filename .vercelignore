@@ -1,0 +1,14 @@
+# Keep the Vercel upload to the Next.js web app only.
+# These folders are large local/desktop/mobile build artifacts and are not
+# needed by `next build` on Vercel.
+mobile
+dist
+dist-desktop
+data
+certs
+tests
+.next
+.next-run
+.next-vercel-check
+coverage
+*.log
