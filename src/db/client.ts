@@ -30,18 +30,24 @@ async function createRuntime(): Promise<Runtime> {
 
   if (url && /^postgres(ql)?:\/\//.test(url)) {
     const caPath = process.env.SUPABASE_CA_CERT_PATH?.trim();
+    const caInline = process.env.SUPABASE_CA_CERT?.trim();
     const isSupabase = /supabase\.(co|com)/i.test(url);
     let connectionString = url;
     let ssl: Pool["options"]["ssl"];
     if (isSupabase) {
-      if (!caPath) {
-        throw new Error("اضبط SUPABASE_CA_CERT_PATH إلى ملف شهادة Supabase CA قبل الاتصال.");
+      const ca = caInline
+        ? caInline.replace(/\\n/g, "\n")
+        : caPath
+          ? fs.readFileSync(path.resolve(process.cwd(), caPath), "utf8")
+          : "";
+      if (!ca) {
+        throw new Error("اضبط SUPABASE_CA_CERT أو SUPABASE_CA_CERT_PATH إلى شهادة Supabase CA قبل الاتصال.");
       }
       const parsedUrl = new URL(url);
       parsedUrl.searchParams.delete("sslmode");
       connectionString = parsedUrl.toString();
       ssl = {
-        ca: fs.readFileSync(path.resolve(process.cwd(), caPath), "utf8"),
+        ca,
         rejectUnauthorized: true,
       };
     }
