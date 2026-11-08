@@ -1,0 +1,15 @@
+node_modules
+.next
+.next-run
+out
+dist
+dist-desktop
+coverage
+data
+*.log
+.env
+.env.local
+certs/supabase-prod-ca-2021.crt
+.DS_Store
+tsconfig.tsbuildinfo
+next-env.d.ts

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793899010933,
+      "tag": "0000_aberrant_moonstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794057600000,
+      "tag": "0001_platform_saas",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794144000000,
+      "tag": "0002_member_permission_overrides",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: hisab-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hisab
+      POSTGRES_PASSWORD: hisab
+      POSTGRES_DB: hisab
+    ports:
+      - "5432:5432"
+    volumes:
+      - hisab_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hisab -d hisab"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  hisab_pgdata:
