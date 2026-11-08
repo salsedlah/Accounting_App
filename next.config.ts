@@ -7,7 +7,10 @@ const nextConfig: NextConfig = {
   output: "standalone",
   serverExternalPackages: ["@electric-sql/pglite", "pg", "pdfkit"],
   outputFileTracingIncludes: {
-    "/api/**": ["./public/fonts/**", "./node_modules/pdfkit/js/data/**"],
+    // The DB layer runs Drizzle migrations from `drizzle/` at runtime using a
+    // path built from process.cwd(), so it is not statically traceable.
+    "/*": ["./drizzle/**", "./public/fonts/**", "./node_modules/pdfkit/js/data/**"],
+    "/api/**": ["./drizzle/**", "./public/fonts/**", "./node_modules/pdfkit/js/data/**"],
   },
 };
 
