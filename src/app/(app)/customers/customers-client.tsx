@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { MessageCircle, Pencil, Plus, Search, Wallet } from "lucide-react";
-import { api, errorMessage, patchJson, postJson } from "@/lib/client/api";
+import { api, errorMessage, patchJson, postJson, wasQueuedOffline } from "@/lib/client/api";
 import { formatMoney, moneyToInput } from "@/lib/money";
+import { pendingOperations } from "@/lib/offline/db";
 import { Alert, Badge, Button, Field, Modal } from "@/components/ui";
 import { PaymentDialog } from "@/components/payment-dialog";
 
@@ -61,11 +62,24 @@ export function CustomersClient() {
     setLoading(true);
     setError(null);
     try {
-      const [data, lookups] = await Promise.all([
+      const [data, lookups, queued] = await Promise.all([
         api<{ customers: Customer[]; reminders: Reminder[] }>("/api/customers"),
         api<{ cashboxes: Array<{ id: string; name: string }> }>("/api/lookups"),
+        pendingOperations("customer.create"),
       ]);
-      setCustomers(data.customers);
+      const localCustomers: Customer[] = queued.map((item) => ({
+        id: item.id,
+        name: String(item.payload.name ?? "عميل جديد"),
+        phone: typeof item.payload.phone === "string" ? item.payload.phone : null,
+        address: typeof item.payload.address === "string" ? item.payload.address : null,
+        creditLimitMinor: "0",
+        isActive: true,
+        lastTransactionAt: item.createdAt,
+        balanceMinor: "0",
+        overLimit: false,
+      }));
+      const localIds = new Set(localCustomers.map((customer) => customer.id));
+      setCustomers([...localCustomers, ...data.customers.filter((customer) => !localIds.has(customer.id))]);
       setReminders(data.reminders);
       setCashboxes(lookups.cashboxes);
     } catch (err) {
@@ -134,11 +148,12 @@ export function CustomersClient() {
         creditLimit: form.creditLimit || "0",
         isActive: form.isActive,
       };
+      let result: unknown;
       if (editing) await patchJson(`/api/customers/${editing.id}`, payload);
-      else await postJson("/api/customers", payload);
+      else result = await postJson("/api/customers", payload);
       setForm(null);
       setEditing(null);
-      setMessage(editing ? "تم تحديث بيانات العميل" : "تمت إضافة العميل");
+      setMessage(editing ? "تم تحديث بيانات العميل" : wasQueuedOffline(result) ? "تم حفظ العميل محليًا وسيُزامن عند عودة الاتصال" : "تمت إضافة العميل");
       await load();
     } catch (err) {
       setError(errorMessage(err));

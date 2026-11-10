@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
-import { api, errorMessage, idempotencyKey, isNetworkFailure, postJson } from "@/lib/client/api";
+import { api, errorMessage, idempotencyKey, isNetworkFailure, postJson, wasQueuedOffline } from "@/lib/client/api";
 import { formatMoney, parseMoney } from "@/lib/money";
 import { pendingOperations, queueOfflineOperation } from "@/lib/offline/db";
 import { Alert, Badge, Button, Field, Modal } from "@/components/ui";
@@ -89,13 +89,13 @@ export function ExpensesClient() {
         reference: form.reference || undefined,
         idempotencyKey: idempotencyKey("exp"),
       };
-      let queued = false;
+      let result: unknown;
       try {
-        await postJson("/api/expenses", payload);
+        result = await postJson("/api/expenses", payload);
       } catch (err) {
         if (!isNetworkFailure(err)) throw err;
         await queueOfflineOperation("expense.create", payload, parseMoney(form.amount).toString());
-        queued = true;
+        result = { offlineQueued: true };
       }
       setOpen(false);
       setForm({
@@ -105,7 +105,7 @@ export function ExpensesClient() {
         cashboxId: cashboxes[0]?.id ?? "",
         reference: "",
       });
-      setMessage(queued ? "تم حفظ المصروف على هذا الجهاز وسيُزامن عند عودة الاتصال" : "تم تسجيل المصروف وترحيل القيد");
+      setMessage(wasQueuedOffline(result) ? "تم حفظ المصروف على هذا الجهاز وسيُزامن عند عودة الاتصال" : "تم تسجيل المصروف وترحيل القيد");
       await load();
     } catch (err) {
       setError(errorMessage(err));

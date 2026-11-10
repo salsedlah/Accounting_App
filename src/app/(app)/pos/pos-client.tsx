@@ -137,6 +137,26 @@ export function PosClient({ role }: { role: string }) {
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBarcodeRef = useRef({ value: "", at: 0 });
+
+  function playBarcodeBeep() {
+    try {
+      const AudioContextClass = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = new AudioContextClass();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.value = 2100;
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.11);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.115);
+      oscillator.onended = () => void context.close();
+    } catch { /* Browser audio can be unavailable or muted. */ }
+  }
   const cartRef = useRef<CartLine[]>([]);
 
   const commitCart = useCallback((next: CartLine[]) => {
@@ -274,6 +294,7 @@ export function PosClient({ role }: { role: string }) {
       (p) => (p.barcode ?? "").toLowerCase() === q || p.sku.toLowerCase() === q,
     );
     if (product) {
+      playBarcodeBeep();
       addProduct(product);
       setMessage(`أضيف ${product.name}`);
       setTimeout(() => setMessage(null), 2000);
@@ -294,6 +315,7 @@ export function PosClient({ role }: { role: string }) {
       setError(`لم يتم العثور على منتج بالباركود: ${code}`);
       return;
     }
+    playBarcodeBeep();
     addProduct(product);
     setError(null);
     setMessage(`أضيف ${product.name}`);

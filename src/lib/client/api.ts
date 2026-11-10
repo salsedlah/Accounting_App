@@ -1,4 +1,22 @@
 export type ApiError = { error?: string; code?: string; details?: unknown };
+export type OfflineQueuedResponse = { offlineQueued: true; operationId: string };
+
+type QueueableOfflineOperation = Exclude<import("@/lib/offline/db").OfflineOperationType, "sale.create">;
+const OFFLINE_POSTS: Record<string, QueueableOfflineOperation> = {
+  "/api/purchases": "purchase.create",
+  "/api/expenses": "expense.create",
+  "/api/payments": "payment.create",
+  "/api/customers": "customer.create",
+  "/api/suppliers": "supplier.create",
+  "/api/products": "product.create",
+  "/api/debts": "debt.create",
+  "/api/inventory/adjust": "inventory.adjust",
+  "/api/cashbox/manual": "cashbox.manual",
+};
+
+export function wasQueuedOffline(value: unknown): value is OfflineQueuedResponse {
+  return Boolean(value && typeof value === "object" && "offlineQueued" in value && value.offlineQueued === true);
+}
 
 export class ApiRequestError extends Error {
   status: number;
@@ -87,7 +105,26 @@ export async function api<T>(input: RequestInfo | URL, init?: RequestInit): Prom
 }
 
 export function postJson<T>(url: string, body: unknown): Promise<T> {
-  return api<T>(url, { method: "POST", body: JSON.stringify(body) });
+  return (async () => {
+    const path = new URL(url, typeof window === "undefined" ? "http://localhost" : window.location.origin).pathname;
+    const operationType = OFFLINE_POSTS[path];
+    const original = body && typeof body === "object" && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : null;
+    try {
+      return await api<T>(url, { method: "POST", body: JSON.stringify(body) });
+    } catch (error) {
+      if (!operationType || !original || !isNetworkFailure(error)) throw error;
+      const { queueOfflineOperation } = await import("@/lib/offline/db");
+      const queuedPayload = { ...original, idempotencyKey: original.idempotencyKey ?? idempotencyKey("offline") };
+      const opId = String(queuedPayload.idempotencyKey);
+      await queueOfflineOperation(operationType, queuedPayload);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("offline-operation-queued", { detail: { operationId: opId } }));
+      }
+      return { offlineQueued: true, operationId: opId } as T;
+    }
+  })();
 }
 
 export function patchJson<T>(url: string, body: unknown): Promise<T> {
