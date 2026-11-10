@@ -137,24 +137,43 @@ export function PosClient({ role }: { role: string }) {
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBarcodeRef = useRef({ value: "", at: 0 });
+  const barcodeAudioContextRef = useRef<AudioContext | null>(null);
 
-  function playBarcodeBeep() {
+  function unlockBarcodeAudio() {
     try {
       const AudioContextClass = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioContextClass) return;
-      const context = new AudioContextClass();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "square";
-      oscillator.frequency.value = 2100;
-      gain.gain.setValueAtTime(0.0001, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.008);
-      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.11);
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 0.115);
-      oscillator.onended = () => void context.close();
+      barcodeAudioContextRef.current ??= new AudioContextClass();
+      if (barcodeAudioContextRef.current.state === "suspended") {
+        void barcodeAudioContextRef.current.resume().catch(() => undefined);
+      }
+    } catch { /* Browser audio can be unavailable or muted. */ }
+  }
+
+  function playBarcodeBeep() {
+    try {
+      const context = barcodeAudioContextRef.current;
+      if (!context) return;
+      const play = () => {
+        if (context.state !== "running") return;
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const startAt = context.currentTime;
+        oscillator.type = "square";
+        oscillator.frequency.value = 2100;
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(0.18, startAt + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.12);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(startAt);
+        oscillator.stop(startAt + 0.125);
+      };
+      if (context.state !== "running") {
+        void context.resume().then(play).catch(() => undefined);
+      } else {
+        play();
+      }
     } catch { /* Browser audio can be unavailable or muted. */ }
   }
   const cartRef = useRef<CartLine[]>([]);
@@ -289,12 +308,12 @@ export function PosClient({ role }: { role: string }) {
 
   function handleScan(value: string) {
     setScannerOpen(false);
+    playBarcodeBeep();
     const q = value.trim().toLowerCase();
     const product = (data?.products ?? []).find(
-      (p) => (p.barcode ?? "").toLowerCase() === q || p.sku.toLowerCase() === q,
+      (p) => (p.barcode ?? "").trim().toLowerCase() === q || p.sku.trim().toLowerCase() === q,
     );
     if (product) {
-      playBarcodeBeep();
       addProduct(product);
       setMessage(`أضيف ${product.name}`);
       setTimeout(() => setMessage(null), 2000);
@@ -310,12 +329,15 @@ export function PosClient({ role }: { role: string }) {
     const now = Date.now();
     if (lastBarcodeRef.current.value === code && now - lastBarcodeRef.current.at < 700) return;
     lastBarcodeRef.current = { value: code, at: now };
-    const product = (data?.products ?? []).find((p) => (p.barcode ?? "").trim() === code);
+    playBarcodeBeep();
+    const normalized = code.toLowerCase();
+    const product = (data?.products ?? []).find(
+      (p) => (p.barcode ?? "").trim().toLowerCase() === normalized || p.sku.trim().toLowerCase() === normalized,
+    );
     if (!product) {
       setError(`لم يتم العثور على منتج بالباركود: ${code}`);
       return;
     }
-    playBarcodeBeep();
     addProduct(product);
     setError(null);
     setMessage(`أضيف ${product.name}`);
@@ -773,7 +795,7 @@ export function PosClient({ role }: { role: string }) {
                 placeholder="ابحث بالاسم أو الباركود أو SKU..."
               />
             </div>
-            <Button variant="secondary" onClick={() => setScannerOpen(true)} aria-label="مسح بالكاميرا">
+            <Button variant="secondary" onClick={() => { unlockBarcodeAudio(); setScannerOpen(true); }} aria-label="مسح بالكاميرا">
               <Barcode className="h-4 w-4" />
               <span>مسح بالكاميرا</span>
             </Button>
@@ -792,6 +814,7 @@ export function PosClient({ role }: { role: string }) {
                 }
               }}
               onKeyDown={(event) => {
+                unlockBarcodeAudio();
                 if (event.key === "Enter") {
                   event.preventDefault();
                   if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);

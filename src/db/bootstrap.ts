@@ -4,28 +4,40 @@ import { businesses, businessSubscriptions, permissions, subscriptionPlans } fro
 import { eq } from "drizzle-orm";
 import { PERMISSION_CATALOG } from "@/lib/constants";
 
-let ready: Promise<void> | undefined;
+declare global {
+  // eslint-disable-next-line no-var
+  var __hisab_ready: { key: string; promise: Promise<void> } | undefined;
+}
 
-/** Runs migrations (via getDb) and the idempotent demo seed exactly once. */
+/**
+ * Runs migrations (via getDb) and the idempotent demo seed exactly once per
+ * database URL. Keying by URL means a test or embedded process that switches
+ * databases cannot silently reuse the readiness/seed state of the previous one.
+ */
 export function ensureReady(): Promise<void> {
-  if (!ready) {
-    ready = (async () => {
-      await getDb();
-      await ensureInitialPlans();
-      const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
-      const isRemotePostgres = /^postgres(ql)?:\/\//i.test(databaseUrl);
-      // A remote production database must never receive the local demo business,
-      // users, and sample transactions implicitly during application startup.
-      if (isRemotePostgres && process.env.ALLOW_DEMO_SEED !== "true") return;
-      await ensureSeed();
-      // The local seed may create its demo business after the first plan pass.
-      await ensureInitialPlans();
-    })().catch((error) => {
-      ready = undefined;
-      throw error;
-    });
+  const key = process.env.DATABASE_URL?.trim() ?? "";
+  if (!globalThis.__hisab_ready || globalThis.__hisab_ready.key !== key) {
+    const entry: { key: string; promise: Promise<void> } = {
+      key,
+      promise: (async () => {
+        await getDb();
+        await ensureInitialPlans();
+        const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
+        const isRemotePostgres = /^postgres(ql)?:\/\//i.test(databaseUrl);
+        // A remote production database must never receive the local demo business,
+        // users, and sample transactions implicitly during application startup.
+        if (isRemotePostgres && process.env.ALLOW_DEMO_SEED !== "true") return;
+        await ensureSeed();
+        // The local seed may create its demo business after the first plan pass.
+        await ensureInitialPlans();
+      })().catch((error) => {
+        if (globalThis.__hisab_ready === entry) globalThis.__hisab_ready = undefined;
+        throw error;
+      }),
+    };
+    globalThis.__hisab_ready = entry;
   }
-  return ready;
+  return globalThis.__hisab_ready.promise;
 }
 
 async function ensureInitialPlans() {

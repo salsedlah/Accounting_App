@@ -16,7 +16,7 @@ const { trialBalance } = await import("@/server/services/reports");
 const { getCustomerStatement } = await import("@/server/services/parties");
 const { countOpenSales } = await import("./helpers");
 
-const db = await getDb();
+let db: Awaited<ReturnType<typeof getDb>>;
 
 type Session = {
   userId: string;
@@ -45,7 +45,11 @@ async function waterStock(): Promise<bigint> {
 }
 
 beforeAll(async () => {
+  // Each test file owns its temporary database. Reset any runtime left by a
+  // previous file in the shared fork before creating this file's runtime.
+  await closeDb();
   await ensureReady();
+  db = await getDb();
 
   const [business] = await db.select().from(schema.businesses).limit(1);
   const [owner] = await db

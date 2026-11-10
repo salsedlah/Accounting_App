@@ -37,7 +37,7 @@ export function BarcodeScanner({
       if (NativeDetector && navigator.mediaDevices?.getUserMedia) {
         try {
           const detector = new NativeDetector({
-            formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"],
+            formats: ["qr_code", "ean_13", "ean_8", "upc_a", "upc_e", "code_128"],
           });
           stream = await navigator.mediaDevices.getUserMedia({
             audio: false,

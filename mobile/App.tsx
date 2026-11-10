@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import * as Network from "expo-network";
 import {
+  AppState,
   ActivityIndicator,
   Alert,
   FlatList,
@@ -18,15 +19,18 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createRecord,
+  deactivateRecord,
   getCachedJson,
   loginRequest,
-  patchJson,
   postJson,
-  syncOutbox,
+  registerRequest,
+  syncAll,
+  updateRecord,
   type CachedResult,
 } from "./src/api";
-import { pendingRequestCount, readCache, writeCache } from "./src/local-db";
+import { pendingRequestCount, readCache, setLocalScope, writeCache } from "./src/local-db";
 import { APP_MODULES, FIELD_LABELS, ROLE_PERMISSIONS, type AppModule } from "./src/modules";
+import { BackupRestoreScreen } from "./src/BackupRestoreScreen";
 import {
   clearAuthenticatedSession,
   getCachedSession,
@@ -41,7 +45,9 @@ type Screen =
   | { name: "settings" }
   | { name: "module"; module: AppModule }
   | { name: "create"; module: AppModule }
+  | { name: "edit"; module: AppModule; record: Record<string, unknown> }
   | { name: "pos" }
+  | { name: "backup" }
   | { name: "ai" };
 
 type PosUnit = {
@@ -94,6 +100,11 @@ const REPORT_TYPES = [
   { id: "lowstock", name: "المخزون المنخفض" },
   { id: "documents", name: "المستندات" },
 ];
+
+const OFFLINE_CREATE_MODULES = new Set([
+  "customers", "suppliers", "products", "purchases", "debts", "supplier-debts",
+  "expenses", "inventory", "stocktaking", "cashbox", "settings",
+]);
 
 function randomKey(): string {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
@@ -261,6 +272,7 @@ export default function App() {
   const [online, setOnline] = useState(false);
   const [pending, setPending] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [syncRevision, setSyncRevision] = useState(0);
 
   const refreshPending = useCallback(async () => {
     setPending(await pendingRequestCount());
@@ -270,10 +282,16 @@ export default function App() {
     if (!online || !session) return;
     setSyncing(true);
     try {
-      const result = await syncOutbox();
+      const result = await syncAll(session);
       await refreshPending();
+      setSyncRevision((current) => current + 1);
       if (result.failed > 0) {
-        Alert.alert("اكتملت المزامنة جزئياً", `تمت مزامنة ${result.done} وبقيت ${result.failed} عملية.`);
+        Alert.alert("اكتملت المزامنة جزئياً", `تمت مزامنة ${result.pushed} وبقيت ${result.failed} عملية.`);
+      } else if (result.cloudLinked && (result.pulled > 0 || result.conflicts > 0)) {
+        Alert.alert(
+          "اكتملت المزامنة",
+          `تم استلام ${result.pulled} تغيير${result.conflicts > 0 ? `، وتم إبقاء ${result.conflicts} تعديل محلي أولاً` : ""}.`,
+        );
       }
     } catch (error) {
       Alert.alert("تعذر بدء المزامنة", error instanceof Error ? error.message : "خطأ غير متوقع");
@@ -284,8 +302,11 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([getServerUrl(), getCachedSession(), pendingRequestCount()]).then(
-      ([url, cachedSession, count]) => {
+    void Promise.all([getServerUrl(), getCachedSession()]).then(
+      async ([url, cachedSession]) => {
+        if (!active) return;
+        await setLocalScope(cachedSession ?? null);
+        const count = await pendingRequestCount();
         if (!active) return;
         setServerUrl(url);
         setSession(cachedSession);
@@ -299,9 +320,11 @@ export default function App() {
     });
 
     const syncIfAuthenticated = async () => {
-      if (!(await getCachedSession())) return;
-      const result = await syncOutbox();
+      const cached = await getCachedSession();
+      if (!cached) return;
+      const result = await syncAll(cached);
       await refreshPending();
+      setSyncRevision((current) => current + 1);
       if (result.failed > 0) {
         Alert.alert("مزامنة معلّقة", `تعذرت مزامنة ${result.failed} عملية. ستبقى محفوظة على الجهاز.`);
       }
@@ -324,9 +347,16 @@ export default function App() {
         });
       }
     });
+    const appStateSubscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active") return;
+      void Network.getNetworkStateAsync().then((state) => {
+        if (state.isConnected === true) void syncIfAuthenticated();
+      }).catch(() => undefined);
+    });
     return () => {
       active = false;
       subscription.remove();
+      appStateSubscription.remove();
     };
   }, [refreshPending]);
 
@@ -347,8 +377,43 @@ export default function App() {
       throw new Error("استجابة تسجيل الدخول لا تحتوي على جلسة تطبيق صالحة.");
     }
     await saveAuthenticatedSession(response.token, response.session);
+    await setLocalScope(response.session);
     setSession(response.session);
     await refreshPending();
+    void syncAll(response.session)
+      .then(async () => { await refreshPending(); setSyncRevision((current) => current + 1); })
+      .catch(() => {
+        // Offline login is expected; the outbox keeps everything queued.
+      });
+  }
+
+  async function submitRegister(input: {
+    email: string;
+    password: string;
+    name: string;
+    businessName?: string;
+  }) {
+    const response = await registerRequest<{
+      token?: string;
+      session?: MobileSession;
+      needsConfirmation?: boolean;
+      message?: string;
+    }>(input);
+    if (response.needsConfirmation) {
+      throw new Error(response.message ?? "أكّد بريدك الإلكتروني ثم سجّل الدخول.");
+    }
+    if (!response.token || !response.session) {
+      throw new Error("استجابة إنشاء الحساب لا تحتوي على جلسة تطبيق صالحة.");
+    }
+    await saveAuthenticatedSession(response.token, response.session);
+    await setLocalScope(response.session);
+    setSession(response.session);
+    await refreshPending();
+    void syncAll(response.session)
+      .then(async () => { await refreshPending(); setSyncRevision((current) => current + 1); })
+      .catch(() => {
+        // The account is usable offline even when the first sync fails.
+      });
   }
 
   async function saveConnection(value: string) {
@@ -359,6 +424,7 @@ export default function App() {
 
   async function logout() {
     await clearAuthenticatedSession();
+    await setLocalScope(null);
     setSession(null);
     setScreen({ name: "home" });
   }
@@ -389,6 +455,7 @@ export default function App() {
         initialUrl={serverUrl}
         onSaveConnection={saveConnection}
         onLogin={submitLogin}
+        onRegister={submitRegister}
         onSetup={() => setScreen({ name: "settings" })}
       />
     );
@@ -404,14 +471,34 @@ export default function App() {
     );
   }
 
+  if (screen.name === "backup") {
+    return (
+      <BackupRestoreScreen
+        online={online}
+        cloudEnabled={Boolean(session.authUserId)}
+        isOwner={session.role === "owner"}
+        onBack={() => setScreen({ name: "home" })}
+        onRestored={async () => {
+          await refreshPending();
+          if (online) {
+            await syncAll(session);
+            setSyncRevision((current) => current + 1);
+          }
+        }}
+      />
+    );
+  }
+
   if (screen.name === "module") {
     return (
       <ModuleScreen
         key={screen.module.id}
         module={screen.module}
         online={online}
+        syncRevision={syncRevision}
         onBack={() => setScreen({ name: "home" })}
         onCreate={() => setScreen({ name: "create", module: screen.module })}
+        onEdit={(record) => setScreen({ name: "edit", module: screen.module, record })}
       />
     );
   }
@@ -428,10 +515,24 @@ export default function App() {
     );
   }
 
+  if (screen.name === "edit") {
+    return (
+      <EditRecordScreen
+        key={`${screen.module.id}:${String(screen.record.id)}`}
+        module={screen.module}
+        record={screen.record}
+        online={online}
+        onBack={() => setScreen({ name: "module", module: screen.module })}
+        onSaved={() => setScreen({ name: "module", module: screen.module })}
+      />
+    );
+  }
+
   if (screen.name === "pos") {
     return (
       <PosScreen
         online={online}
+        syncRevision={syncRevision}
         onBack={() => setScreen({ name: "home" })}
         onSaved={refreshPending}
       />
@@ -488,6 +589,7 @@ export default function App() {
             <ActionButton title="إعداد الخادم" secondary onPress={() => setScreen({ name: "settings" })} />
             <ActionButton title="تسجيل الخروج" secondary onPress={() => void logout()} />
           </View>
+          <ActionButton title="النسخ الاحتياطي والاستعادة" secondary onPress={() => setScreen({ name: "backup" })} />
         </Card>
       </ScrollView>
       <StatusBar style="dark" />
@@ -499,31 +601,56 @@ function AuthScreen({
   initialUrl,
   onSaveConnection,
   onLogin,
+  onRegister,
   onSetup,
 }: {
   initialUrl: string;
   onSaveConnection: (value: string) => Promise<void>;
   onLogin: (email: string, password: string) => Promise<void>;
+  onRegister: (input: {
+    email: string;
+    password: string;
+    name: string;
+    businessName?: string;
+  }) => Promise<void>;
   onSetup: () => void;
 }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [businessName, setBusinessName] = useState("");
   const [url, setUrl] = useState(initialUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function login() {
+  async function submit() {
     setLoading(true);
     setError("");
     try {
       await onSaveConnection(url);
-      await onLogin(email.trim(), password);
+      if (mode === "register") {
+        await onRegister({
+          email: email.trim(),
+          password,
+          name: name.trim(),
+          businessName: businessName.trim() || undefined,
+        });
+      } else {
+        await onLogin(email.trim(), password);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "تعذر تسجيل الدخول");
+      setError(err instanceof Error ? err.message : "تعذر إكمال العملية");
     } finally {
       setLoading(false);
     }
   }
+
+  const disabled =
+    loading ||
+    !email ||
+    !password ||
+    (mode === "register" && (!name || password.length < 8));
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -534,10 +661,34 @@ function AuthScreen({
           <Text style={styles.authSub}>تطبيق المحاسبة والمخزون</Text>
           <Card style={styles.authCard}>
             <Input label="عنوان الخادم" value={url} onChangeText={setUrl} placeholder="https://accounting.example.com" ltr />
+            {mode === "register" ? (
+              <>
+                <Input label="الاسم" value={name} onChangeText={setName} placeholder="اسمك" />
+                <Input label="اسم النشاط (اختياري)" value={businessName} onChangeText={setBusinessName} placeholder="مثال: متجري" />
+              </>
+            ) : null}
             <Input label="البريد الإلكتروني" value={email} onChangeText={setEmail} placeholder="name@example.com" keyboardType="email-address" ltr />
             <Input label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry />
+            {mode === "register" ? (
+              <Text style={styles.smallMuted}>كلمة المرور 8 أحرف على الأقل. قد يلزم تأكيد البريد الإلكتروني قبل أول دخول.</Text>
+            ) : null}
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
-            <ActionButton title={loading ? "جارٍ تسجيل الدخول..." : "تسجيل الدخول"} onPress={() => void login()} disabled={loading || !email || !password} />
+            <ActionButton
+              title={loading ? "جارٍ المعالجة..." : mode === "register" ? "إنشاء حساب" : "تسجيل الدخول"}
+              onPress={() => void submit()}
+              disabled={disabled}
+            />
+            <Pressable
+              onPress={() => {
+                setMode(mode === "login" ? "register" : "login");
+                setError("");
+              }}
+              style={styles.textButton}
+            >
+              <Text style={styles.linkText}>
+                {mode === "login" ? "ليس لديك حساب؟ إنشاء حساب جديد" : "لديك حساب؟ تسجيل الدخول"}
+              </Text>
+            </Pressable>
             <Text style={styles.smallMuted}>يلزم تسجيل الدخول مرة واحدة على الأقل قبل استخدام البيانات المحفوظة دون اتصال.</Text>
             <Pressable onPress={onSetup} style={styles.textButton}>
               <Text style={styles.linkText}>إعداد عنوان الخادم</Text>
@@ -594,13 +745,17 @@ function ConnectionScreen({
 function ModuleScreen({
   module,
   online,
+  syncRevision,
   onBack,
   onCreate,
+  onEdit,
 }: {
   module: AppModule;
   online: boolean;
+  syncRevision: number;
   onBack: () => void;
   onCreate: () => void;
+  onEdit: (record: Record<string, unknown>) => void;
 }) {
   const [result, setResult] = useState<CachedResult<unknown> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -639,12 +794,15 @@ function ModuleScreen({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, syncRevision]);
 
   const sections = useMemo(
     () => makeSections(result?.data, module).map((section) => ({
       ...section,
-      rows: section.rows.filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search.toLowerCase())),
+      rows: section.rows.filter((row) =>
+        (!(module.id === "customers" || module.id === "suppliers" || module.id === "products") || row.isActive !== false) &&
+        (!search || JSON.stringify(row).toLowerCase().includes(search.toLowerCase())),
+      ),
     })),
     [module, result?.data, search],
   );
@@ -726,6 +884,21 @@ function ModuleScreen({
                         <Text style={styles.dataLabel}>{readableField(key)}</Text>
                       </View>
                     ))}
+                    {(["customers", "suppliers", "products", "users"].includes(module.id) && typeof row.id === "string") ? (
+                      <View style={styles.headerActions}>
+                        <ActionButton title="تعديل" secondary onPress={() => onEdit(row)} />
+                        {module.id !== "users" ? <ActionButton title="تعطيل" secondary onPress={() => Alert.alert(
+                          "تعطيل السجل؟",
+                          "سيُخفى من القوائم النشطة بعد المزامنة، مع الاحتفاظ بسجله المحاسبي.",
+                          [
+                            { text: "إلغاء", style: "cancel" },
+                            { text: "تعطيل", style: "destructive", onPress: () => void deactivateRecord(module.id as "customers" | "suppliers" | "products", row.id as string)
+                              .then((result) => Alert.alert("تم الحفظ", result.queued ? "حُفظ محلياً وسيُزامن عند عودة الاتصال." : "تم تعطيل السجل."))
+                              .catch((error: unknown) => Alert.alert("تعذر التعطيل", error instanceof Error ? error.message : "خطأ غير متوقع")) },
+                          ],
+                        )} /> : null}
+                      </View>
+                    ) : null}
                   </Card>
                 );
               })}
@@ -741,12 +914,110 @@ function ModuleScreen({
   );
 }
 
-function PosScreen({
+function moneyFromMinor(value: unknown): string {
+  try {
+    const minor = BigInt(String(value ?? "0"));
+    const abs = minor < 0n ? -minor : minor;
+    return `${minor < 0n ? "-" : ""}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
+  } catch {
+    return "0.00";
+  }
+}
+
+function EditRecordScreen({
+  module,
+  record,
   online,
   onBack,
   onSaved,
 }: {
+  module: AppModule;
+  record: Record<string, unknown>;
   online: boolean;
+  onBack: () => void;
+  onSaved: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const common: Record<string, string> = {
+      name: String(record.name ?? ""),
+      phone: String(record.phone ?? ""),
+      address: String(record.address ?? ""),
+    };
+    if (module.id === "users") return { role: String(record.role ?? "cashier") };
+    if (module.id === "customers") return { ...common, creditLimit: moneyFromMinor(record.creditLimitMinor) };
+    if (module.id === "products") return {
+      ...common,
+      sku: String(record.sku ?? ""),
+      barcode: String(record.barcode ?? ""),
+      purchaseCost: moneyFromMinor(record.purchaseCostMinor),
+      retailPrice: moneyFromMinor(record.retailPriceMinor),
+      wholesalePrice: moneyFromMinor(record.wholesalePriceMinor),
+      minStock: String(Number(record.minStockMilli ?? 0) / 1000),
+    };
+    return common;
+  });
+  const set = (key: string, value: string) => setValues((current) => ({ ...current, [key]: value }));
+  const fields: Array<[string, string]> = module.id === "users" ? [] : module.id === "products"
+    ? [["name", "اسم المنتج"], ["sku", "رمز المنتج"], ["barcode", "الباركود"], ["purchaseCost", "تكلفة الشراء"], ["retailPrice", "سعر البيع"], ["wholesalePrice", "سعر الجملة"], ["minStock", "حد تنبيه المخزون"]]
+    : [["name", "الاسم"], ["phone", "الهاتف"], ["address", "العنوان"], ...(module.id === "customers" ? [["creditLimit", "حد الائتمان"] as [string, string]] : [])];
+
+  async function save() {
+    if (module.id !== "users" && !values.name.trim()) { setError("الاسم مطلوب."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      const patch: Record<string, unknown> = module.id === "users"
+        ? { role: values.role }
+        : { name: values.name.trim() };
+      if (module.id === "customers" || module.id === "suppliers") {
+        patch.phone = values.phone.trim() || null;
+        patch.address = values.address.trim() || null;
+      }
+      if (module.id === "customers") patch.creditLimit = values.creditLimit;
+      if (module.id === "products") {
+        patch.sku = values.sku.trim();
+        patch.barcode = values.barcode.trim() || null;
+        patch.purchaseCost = values.purchaseCost;
+        patch.retailPrice = values.retailPrice;
+        patch.wholesalePrice = values.wholesalePrice;
+        patch.minStock = values.minStock;
+      }
+      const result = await updateRecord(module.id as "customers" | "suppliers" | "products" | "users", String(record.id), patch);
+      Alert.alert("تم الحفظ", result.queued ? "حُفظ التعديل محلياً وسيُزامن عند عودة الاتصال." : "تم تحديث السجل.");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "تعذر حفظ التعديل");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <Header title={`تعديل · ${module.title}`} onBack={onBack} />
+      <ScrollView contentContainerStyle={styles.pageContent} keyboardShouldPersistTaps="handled">
+        {!online ? <Text style={styles.cacheNotice}>دون اتصال: سيُحفظ التعديل في SQLite ويُرسل لاحقاً.</Text> : null}
+        {module.id === "users" ? <ChoiceList title="الدور" items={[{ id: "accountant", name: "محاسب" }, { id: "cashier", name: "كاشير" }, { id: "inventory_manager", name: "مدير مخزون" }, { id: "viewer", name: "مشاهد" }]} selected={values.role ?? "cashier"} onSelect={(value) => set("role", value)} /> : null}
+        {fields.map(([key, label]) => (
+          <Input key={key} label={label} value={values[key] ?? ""} onChangeText={(value) => set(key, value)} keyboardType={/Cost|Price|Stock|Limit/.test(key) ? "decimal-pad" : "default"} />
+        ))}
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        <ActionButton title={saving ? "جارٍ الحفظ..." : "حفظ التعديل"} disabled={saving} onPress={() => void save()} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function PosScreen({
+  online,
+  syncRevision,
+  onBack,
+  onSaved,
+}: {
+  online: boolean;
+  syncRevision: number;
   onBack: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -772,7 +1043,7 @@ function PosScreen({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, syncRevision]);
 
   const products = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -1109,26 +1380,32 @@ function CreateRecordScreen({
     try {
       let queued = false;
       switch (module.id) {
-        case "customers":
-          await postJson("/api/customers", {
+        case "customers": {
+          const result = await createRecord("/api/customers", {
             name: values.name,
             phone: values.phone || null,
             address: values.address || null,
             creditLimit: values.creditLimit || "0",
+            idempotencyKey: randomKey(),
           });
+          queued = result.queued;
           break;
-        case "suppliers":
-          await postJson("/api/suppliers", {
+        }
+        case "suppliers": {
+          const result = await createRecord("/api/suppliers", {
             name: values.name,
             phone: values.phone || null,
             address: values.address || null,
             notes: values.notes || null,
+            idempotencyKey: randomKey(),
           });
+          queued = result.queued;
           break;
+        }
         case "products": {
           const unitId = values.unitId || units[0]?.id;
           if (!unitId) throw new Error("لا توجد وحدة قياس. أضف وحدة من إعدادات النظام أولاً.");
-          await postJson("/api/products", {
+          const result = await createRecord("/api/products", {
             name: values.name,
             sku: values.sku,
             barcode: values.barcode || null,
@@ -1138,7 +1415,9 @@ function CreateRecordScreen({
             wholesalePrice: values.wholesalePrice || values.retailPrice,
             minStock: values.minStock || "0",
             units: [{ unitId, factor: "1" }],
+            idempotencyKey: randomKey(),
           });
+          queued = result.queued;
           break;
         }
         case "expenses": {
@@ -1182,25 +1461,32 @@ function CreateRecordScreen({
         }
         case "inventory":
           if (!values.productId) throw new Error("اختر المنتج أولاً.");
-          await postJson("/api/inventory/adjust", {
+          const result = await createRecord("/api/inventory/adjust", {
             productId: values.productId,
             direction: values.direction || "increase",
             qty: values.qty,
             unitCost: values.unitCost || undefined,
             reason: values.reason,
+            idempotencyKey: randomKey(),
           });
+          queued = result.queued;
           break;
-        case "stocktaking":
-          await postJson("/api/stocktaking", { title: values.title });
+        case "stocktaking": {
+          const result = await createRecord("/api/stocktaking", { title: values.title, idempotencyKey: randomKey() });
+          queued = result.queued;
           break;
-        case "cashbox":
-          await postJson("/api/cashbox/manual", {
+        }
+        case "cashbox": {
+          const result = await createRecord("/api/cashbox/manual", {
             cashboxId: values.cashboxId || null,
             direction: values.direction || "inflow",
             amount: values.amount,
             description: values.description,
+            idempotencyKey: randomKey(),
           });
+          queued = result.queued;
           break;
+        }
         case "users":
           await postJson("/api/users", {
             name: values.name,
@@ -1209,15 +1495,17 @@ function CreateRecordScreen({
             role: values.role || "cashier",
           });
           break;
-        case "settings":
-          await patchJson("/api/settings", {
+        case "settings": {
+          const result = await updateRecord("settings", "", {
             name: values.name || undefined,
             phone: values.phone || undefined,
             address: values.address || undefined,
             taxEnabled: values.taxEnabled ? values.taxEnabled === "true" : undefined,
             taxRateBp: values.taxRate ? Math.round(Number(values.taxRate) * 100) : undefined,
           });
+          queued = result.queued;
           break;
+        }
         default:
           throw new Error("لا يوجد نموذج إنشاء لهذا القسم.");
       }
@@ -1227,7 +1515,7 @@ function CreateRecordScreen({
         [{ text: "حسنًا", onPress: onSaved }],
       );
     } catch (err) {
-      if (!online && !["expenses", "purchases", "debts", "supplier-debts"].includes(module.id)) {
+      if (!online && !OFFLINE_CREATE_MODULES.has(module.id)) {
         setError("هذه العملية تحتاج اتصالاً بالخادم.");
       } else {
         setError(err instanceof Error ? err.message : "تعذر حفظ البيانات");
@@ -1318,7 +1606,7 @@ function CreateRecordScreen({
         {loadingLookups ? <ActivityIndicator color={COLORS.brand} /> : null}
         {formFields}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        <ActionButton title={saving ? "جارٍ الحفظ..." : "حفظ"} onPress={() => void submit()} disabled={saving || loadingLookups || ( !online && !["expenses", "purchases", "debts", "supplier-debts"].includes(module.id))} />
+        <ActionButton title={saving ? "جارٍ الحفظ..." : "حفظ"} onPress={() => void submit()} disabled={saving || loadingLookups || (!online && !OFFLINE_CREATE_MODULES.has(module.id))} />
       </ScrollView>
       <StatusBar style="dark" />
     </SafeAreaView>

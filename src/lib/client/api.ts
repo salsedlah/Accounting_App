@@ -78,7 +78,9 @@ export async function api<T>(input: RequestInfo | URL, init?: RequestInit): Prom
   if (!response.ok) {
     const message =
       (payload && "error" in payload && payload.error) ||
-      (response.status === 401 ? "انتهت الجلسة، يرجى تسجيل الدخول" : "حدث خطأ غير متوقع");
+      (response.status === 401
+        ? "انتهت الجلسة، يرجى تسجيل الدخول"
+        : `تعذر إكمال الطلب من الخادم (HTTP ${response.status})`);
     throw new ApiRequestError(
       String(message),
       response.status,

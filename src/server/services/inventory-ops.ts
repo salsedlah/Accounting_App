@@ -58,13 +58,14 @@ export async function adjustStock(tx: Tx, session: Session, raw: unknown) {
   if (qty <= 0n) throw new AppError("الكمية يجب أن تكون أكبر من صفر");
   const referenceId = crypto.randomUUID();
   const at = input.occurredAt ? new Date(input.occurredAt) : new Date();
+  let movementId: string | null = null;
 
   if (input.direction === "increase") {
     let unitCost = await currentUnitCost(tx, session.businessId, product.id, warehouse.id);
     if (input.unitCost) unitCost = parseMoney(input.unitCost);
     if (unitCost === 0n) unitCost = product.purchaseCostMinor;
     const value = mulDiv(unitCost, qty, 1000n);
-    await receiveStock(tx, {
+    const received = await receiveStock(tx, {
       businessId: session.businessId,
       productId: product.id,
       warehouseId: warehouse.id,
@@ -77,6 +78,7 @@ export async function adjustStock(tx: Tx, session: Session, raw: unknown) {
       note: input.reason,
       occurredAt: at,
     });
+    movementId = received.movement.id;
     if (value > 0n) {
       await postJournal(tx, {
         businessId: session.businessId,
@@ -105,6 +107,7 @@ export async function adjustStock(tx: Tx, session: Session, raw: unknown) {
       note: input.reason,
       occurredAt: at,
     });
+    movementId = result.movement.id;
     if (result.costMinor > 0n) {
       await postJournal(tx, {
         businessId: session.businessId,
@@ -130,7 +133,7 @@ export async function adjustStock(tx: Tx, session: Session, raw: unknown) {
     after: { qty: qty.toString(), reason: input.reason, warehouseId: warehouse.id },
   });
 
-  return { ok: true };
+  return { ok: true, movementId };
 }
 
 export async function transferInventory(tx: Tx, session: Session, raw: unknown) {
