@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { MessageCircle, Wallet, Plus, History } from "lucide-react";
-import { api, errorMessage, postJson } from "@/lib/client/api";
+import { api, errorMessage, postJson, wasQueuedOffline } from "@/lib/client/api";
 import { formatMoney, moneyToInput } from "@/lib/money";
 import { Alert, Badge, Button, Modal } from "@/components/ui";
 import { PaymentDialog } from "@/components/payment-dialog";
@@ -99,9 +99,10 @@ export function DebtsClient({ mode }: { mode: "customers" | "suppliers" }) {
     setSavingDebt(true);
     setError(null);
     try {
-      await postJson("/api/debts", { customerId: selectedCustomer, amount: debtAmount, note: debtNote });
+      const result = await postJson("/api/debts", { customerId: selectedCustomer, amount: debtAmount, note: debtNote });
       setAddDebt(false); setDebtAmount(""); setDebtNote("");
-      setMessage("تمت إضافة الدين"); await load();
+      setMessage(wasQueuedOffline(result) ? "تم حفظ الدين محليًا وسيُزامن عند عودة الاتصال" : "تمت إضافة الدين"); await load();
+      if (wasQueuedOffline(result)) return;
       setHistory((current) => { const next = { ...current }; delete next[selectedCustomer]; return next; });
       setExpanded(selectedCustomer);
       const statement = await api<CustomerStatement>(`/api/debts/${selectedCustomer}`);

@@ -82,6 +82,7 @@ export function AppShell({
   const [pending, setPending] = useState({ pending: 0, syncing: 0, failed: 0, conflicts: 0, total: 0 });
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [storageUsage, setStorageUsage] = useState<number | null>(null);
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean> | null>(null);
@@ -184,6 +185,15 @@ export function AppShell({
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const queued = () => {
+      setOfflineNotice("حُفظت العملية على هذا الجهاز، وستُزامن تلقائيًا عند عودة الاتصال");
+      window.setTimeout(() => setOfflineNotice(null), 7000);
+    };
+    window.addEventListener("offline-operation-queued", queued);
+    return () => window.removeEventListener("offline-operation-queued", queued);
+  }, []);
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -346,7 +356,7 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl p-4 sm:p-6">{featureDenied ? <div dir="rtl" className="mx-auto mt-10 max-w-lg rounded-2xl border border-amber-200 bg-white p-7 text-center shadow-sm"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-amber-50 text-amber-600"><Sparkles size={22}/></div><h1 className="mt-4 text-lg font-bold">الميزة غير متوفرة في باقتك</h1><p className="mt-2 text-sm leading-6 text-ink-500">هذه الميزة متوفرة في باقة Plus أو Premium. قم بترقية اشتراكك للاستفادة منها.</p><Link href="/subscription" className="mt-5 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white">عرض الاشتراك والباقة</Link></div> : children}</main>
+        <main className="mx-auto max-w-7xl p-4 sm:p-6">{offlineNotice ? <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{offlineNotice}</div> : null}{featureDenied ? <div dir="rtl" className="mx-auto mt-10 max-w-lg rounded-2xl border border-amber-200 bg-white p-7 text-center shadow-sm"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-amber-50 text-amber-600"><Sparkles size={22}/></div><h1 className="mt-4 text-lg font-bold">الميزة غير متوفرة في باقتك</h1><p className="mt-2 text-sm leading-6 text-ink-500">هذه الميزة متوفرة في باقة Plus أو Premium. قم بترقية اشتراكك للاستفادة منها.</p><Link href="/subscription" className="mt-5 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white">عرض الاشتراك والباقة</Link></div> : children}</main>
       </div>
     </div>
   );
