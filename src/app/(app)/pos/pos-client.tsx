@@ -137,12 +137,23 @@ export function PosClient({ role }: { role: string }) {
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBarcodeRef = useRef({ value: "", at: 0 });
+  const barcodeAudioContextRef = useRef<AudioContext | null>(null);
 
-  function playBarcodeBeep() {
+  function unlockBarcodeAudio() {
     try {
       const AudioContextClass = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioContextClass) return;
-      const context = new AudioContextClass();
+      barcodeAudioContextRef.current ??= new AudioContextClass();
+      if (barcodeAudioContextRef.current.state === "suspended") {
+        void barcodeAudioContextRef.current.resume().catch(() => undefined);
+      }
+    } catch { /* Browser audio can be unavailable or muted. */ }
+  }
+
+  function playBarcodeBeep() {
+    try {
+      const context = barcodeAudioContextRef.current;
+      if (!context || context.state !== "running") return;
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       oscillator.type = "square";
@@ -154,7 +165,6 @@ export function PosClient({ role }: { role: string }) {
       gain.connect(context.destination);
       oscillator.start();
       oscillator.stop(context.currentTime + 0.115);
-      oscillator.onended = () => void context.close();
     } catch { /* Browser audio can be unavailable or muted. */ }
   }
   const cartRef = useRef<CartLine[]>([]);
@@ -773,7 +783,7 @@ export function PosClient({ role }: { role: string }) {
                 placeholder="ابحث بالاسم أو الباركود أو SKU..."
               />
             </div>
-            <Button variant="secondary" onClick={() => setScannerOpen(true)} aria-label="مسح بالكاميرا">
+            <Button variant="secondary" onClick={() => { unlockBarcodeAudio(); setScannerOpen(true); }} aria-label="مسح بالكاميرا">
               <Barcode className="h-4 w-4" />
               <span>مسح بالكاميرا</span>
             </Button>
@@ -792,6 +802,7 @@ export function PosClient({ role }: { role: string }) {
                 }
               }}
               onKeyDown={(event) => {
+                unlockBarcodeAudio();
                 if (event.key === "Enter") {
                   event.preventDefault();
                   if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);
