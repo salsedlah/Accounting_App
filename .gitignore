@@ -5,7 +5,7 @@ out
 dist
 dist-desktop
 coverage
-data
+/data
 *.log
 .env
 .env.local
