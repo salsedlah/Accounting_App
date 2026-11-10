@@ -25,6 +25,26 @@ declare global {
 
 const MIGRATIONS = path.join(process.cwd(), "drizzle");
 
+/**
+ * Drizzle's migrator takes no lock, so several lambdas cold-starting at once
+ * can race each other on the same pending migration and one of them fails with
+ * "relation already exists". Retry with a backoff so the losing request still
+ * succeeds instead of surfacing a 500.
+ */
+async function runMigrations(db: NodePgDatabase<typeof schema>): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await migrateNode(db, { migrationsFolder: MIGRATIONS });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
 async function createRuntime(): Promise<Runtime> {
   const url = process.env.DATABASE_URL?.trim();
 
@@ -53,7 +73,7 @@ async function createRuntime(): Promise<Runtime> {
     }
     const pool = new Pool({ connectionString, max: 10, ...(ssl ? { ssl } : {}) });
     const db = drizzleNode(pool, { schema });
-    await migrateNode(db, { migrationsFolder: MIGRATIONS });
+    await runMigrations(db);
     return {
       db,
       kind: "postgres",
@@ -79,7 +99,16 @@ async function createRuntime(): Promise<Runtime> {
 
 export function getRuntime(): Promise<Runtime> {
   if (!globalThis.__hisab_runtime) {
-    globalThis.__hisab_runtime = createRuntime();
+    const pending = createRuntime().catch((error) => {
+      // A cold-start failure (migration lock, transient pooler error) must not
+      // poison this instance for its whole lifetime: drop the cached promise so
+      // the next request retries from scratch.
+      if (globalThis.__hisab_runtime === pending) {
+        globalThis.__hisab_runtime = undefined;
+      }
+      throw error;
+    });
+    globalThis.__hisab_runtime = pending;
   }
   return globalThis.__hisab_runtime;
 }
@@ -94,9 +123,10 @@ export async function transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 }
 
 export async function closeDb(): Promise<void> {
-  if (globalThis.__hisab_runtime) {
-    const runtime = await globalThis.__hisab_runtime;
-    await runtime.close();
+  const pending = globalThis.__hisab_runtime;
+  if (pending) {
     globalThis.__hisab_runtime = undefined;
+    const runtime = await pending.catch(() => undefined);
+    if (runtime) await runtime.close();
   }
 }
