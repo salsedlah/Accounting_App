@@ -11,6 +11,8 @@ export async function GET() {
     return ok({
       session,
       permissions,
+      authMode: session.authUserId ? "supabase" : "legacy",
+      cloudLinked: Boolean(session.authUserId),
     });
   });
 }

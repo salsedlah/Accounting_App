@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { ensureReady } from "@/db/bootstrap";
-import { getDb, type Tx } from "@/db/client";
+import { getDb, transaction, type Tx } from "@/db/client";
 import { syncOperations } from "@/db/schema";
 import { AppError, ok, readJson, route } from "@/server/api";
 import { requireBusinessFeature, requireSession, type Session } from "@/server/auth";
@@ -14,6 +14,8 @@ import { createProduct } from "@/server/services/products";
 import { adjustStock } from "@/server/services/inventory-ops";
 import { createStocktake } from "@/server/services/stocktaking";
 import { createManualCash } from "@/server/services/cashbox";
+import { recordOperationChange, touchSync } from "@/server/services/cloud-sync";
+import { runAutoBackupIfDue } from "@/server/services/cloud-maintenance";
 
 const operationTypes = [
   "sale.create", "purchase.create", "expense.create", "payment.create",
@@ -110,6 +112,12 @@ async function processOperation(
       summary = JSON.parse(
         JSON.stringify(summary, (_key, value) => typeof value === "bigint" ? value.toString() : value),
       );
+      // Record the change inside the same transaction that produced the
+      // business rows. A failed change insert rolls back the operation too,
+      // so a device is never told "done" without a pull-able change.
+      if (session.authUserId) {
+        await recordOperationChange(tx, session, op.type, summary, deviceId);
+      }
       await tx
         .update(syncOperations)
         .set({ status: "done", result: summary, processedAt: new Date(), error: null })
@@ -160,10 +168,27 @@ export async function POST(request: Request) {
     for (const op of input.operations) {
       results.push(await processOperation(session, op, input.deviceId));
     }
+    const done = results.filter((r) => r.status === "done").length;
+    const failed = results.length - done;
+
+    // Cloud bookkeeping only runs for verified Supabase identities. Legacy
+    // sessions keep syncing business operations but never claim a cloud owner.
+    let settings = null;
+    let autoBackup = null;
+    if (session.authUserId) {
+      settings = await transaction((tx) => touchSync(tx, session, input.deviceId));
+      autoBackup = await runAutoBackupIfDue(session);
+    }
+
     return ok({
       results,
-      done: results.filter((r) => r.status === "done").length,
-      failed: results.filter((r) => r.status !== "done").length,
+      done,
+      failed,
+      cloud: {
+        linked: Boolean(session.authUserId),
+        settings,
+        autoBackup,
+      },
     });
   });
 }

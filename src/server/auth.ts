@@ -26,6 +26,8 @@ export type Session = {
   name: string;
   role: string;
   businessName: string;
+  /** Supabase Auth id linked to this local user, when available. */
+  authUserId?: string | null;
 };
 
 export async function hashPassword(plain: string): Promise<string> {
@@ -78,7 +80,7 @@ export async function getSession(): Promise<Session | null> {
 
   const db = await getDb();
   if (payload.bid === "platform") {
-    const [admin] = await db.select({ userId: users.id, email: users.email, name: users.name })
+    const [admin] = await db.select({ userId: users.id, email: users.email, name: users.name, authUserId: users.authUserId })
       .from(platformAdmins)
       .innerJoin(users, eq(users.id, platformAdmins.userId))
       .where(and(eq(users.id, payload.uid), eq(users.isActive, true)))
@@ -90,6 +92,7 @@ export async function getSession(): Promise<Session | null> {
       userId: users.id,
       email: users.email,
       name: users.name,
+      authUserId: users.authUserId,
       role: memberships.role,
       businessId: businesses.id,
       businessName: businesses.name,

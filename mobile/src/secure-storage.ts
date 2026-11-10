@@ -7,11 +7,14 @@ export type MobileSession = {
   name: string;
   role: string;
   businessName: string;
+  authUserId?: string | null;
 };
 
 const SERVER_URL_KEY = "hisab_server_url";
 const TOKEN_KEY = "hisab_session_token";
 const SESSION_KEY = "hisab_cached_session";
+const DEVICE_ID_KEY = "hisab_device_id";
+const PRODUCTION_API_URL = "https://accounting-app-one-ochre.vercel.app";
 
 export function normalizeServerUrl(value: string, allowLocalHttp = __DEV__): string {
   const trimmed = value.trim().replace(/\/+$/, "");
@@ -37,7 +40,7 @@ export function normalizeServerUrl(value: string, allowLocalHttp = __DEV__): str
 
 export async function getServerUrl(): Promise<string> {
   const saved = await SecureStore.getItemAsync(SERVER_URL_KEY);
-  const configured = process.env.EXPO_PUBLIC_API_URL?.trim();
+  const configured = process.env.EXPO_PUBLIC_API_URL?.trim() || PRODUCTION_API_URL;
   if (configured) return normalizeServerUrl(configured, !__DEV__);
   return saved ? normalizeServerUrl(saved, __DEV__) : "";
 }
@@ -76,4 +79,16 @@ export async function clearAuthenticatedSession(): Promise<void> {
     SecureStore.deleteItemAsync(TOKEN_KEY),
     SecureStore.deleteItemAsync(SESSION_KEY),
   ]);
+}
+
+/** Stable per-installation id used for server-side sync cursors. */
+export async function getDeviceId(): Promise<string> {
+  const existing = await SecureStore.getItemAsync(DEVICE_ID_KEY);
+  if (existing) return existing;
+  const cryptoApi = globalThis.crypto as { randomUUID?: () => string } | undefined;
+  const value =
+    cryptoApi?.randomUUID?.() ??
+    `expo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  await SecureStore.setItemAsync(DEVICE_ID_KEY, value);
+  return value;
 }

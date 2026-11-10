@@ -124,6 +124,11 @@ export async function transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 
 export async function closeDb(): Promise<void> {
   const pending = globalThis.__hisab_runtime;
+  // Readiness and seed are bound to the runtime/database that produced them.
+  // Clearing them prevents a later database (for example a test file or an
+  // embedded switch) from inheriting a resolved promise with no seeded rows.
+  globalThis.__hisab_ready = undefined;
+  globalThis.__hisab_seed = undefined;
   if (pending) {
     globalThis.__hisab_runtime = undefined;
     const runtime = await pending.catch(() => undefined);

@@ -37,9 +37,12 @@ export async function createCustomerDebt(tx: Tx, session: Session, raw: unknown)
   const [customer] = await tx.select().from(customers).where(and(eq(customers.id, input.customerId), eq(customers.businessId, session.businessId)));
   if (!customer) throw new AppError("العميل غير موجود", 404);
   const refId = crypto.randomUUID();
-  await tx.insert(customerAccounts).values({ businessId: session.businessId, customerId: customer.id, entryType: "debt", amountMinor: amount, referenceType: "manual_debt", referenceId: refId, note: input.note?.trim() || "دين مضاف يدوياً" });
+  const [account] = await tx
+    .insert(customerAccounts)
+    .values({ businessId: session.businessId, customerId: customer.id, entryType: "debt", amountMinor: amount, referenceType: "manual_debt", referenceId: refId, note: input.note?.trim() || "دين مضاف يدوياً" })
+    .returning({ id: customerAccounts.id });
   await writeAudit(tx, { businessId: session.businessId, userId: session.userId, action: "customer.debt_created", entityType: "customer", entityId: customer.id, after: { amount: amount.toString(), note: input.note } });
-  return { ok: true };
+  return { ok: true, accountId: account.id };
 }
 
 export async function listCustomers(

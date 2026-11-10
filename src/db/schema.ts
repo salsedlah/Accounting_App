@@ -1,6 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   date,
   index,
@@ -100,6 +101,9 @@ export const businesses = pgTable("businesses", {
   offlineSellLimitMilli: bigint("offline_sell_limit_milli", { mode: "bigint" })
     .notNull()
     .default(sql`5000000`),
+  // Supabase Auth id of the account owner. Every cloud row is linked to this
+  // account through its business. Kept nullable for legacy/local businesses.
+  ownerAuthUserId: uuid("owner_auth_user_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -110,10 +114,13 @@ export const users = pgTable(
     email: text("email").notNull(),
     name: text("name").notNull(),
     passwordHash: text("password_hash").notNull(),
+    // Supabase Auth user id. Nullable so existing installations keep working
+    // until each account signs in through Supabase for the first time.
+    authUserId: uuid("auth_user_id"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("users_email_uq").on(t.email)],
+  (t) => [uniqueIndex("users_email_uq").on(t.email), uniqueIndex("users_auth_user_id_uq").on(t.authUserId)],
 );
 
 // Platform administrators are provisioned out of band by an operator. No
@@ -960,6 +967,100 @@ export const notificationEvents = pgTable(
   (t) => [
     index("notifications_business_idx").on(t.businessId, t.createdAt),
     index("notifications_customer_idx").on(t.businessId, t.entityId),
+  ],
+);
+
+/* ------------------------------------------------ cloud sync and backups */
+
+// Monotonic change feed. `id` doubles as the pull cursor/version so clients can
+// request "everything after N" without relying on wall-clock timestamps.
+export const syncChanges = pgTable(
+  "sync_changes",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    // Supabase Auth user id of the account that owns the business.
+    userId: uuid("user_id"),
+    tableName: text("table_name").notNull(),
+    recordId: text("record_id").notNull(),
+    operation: text("operation").notNull(),
+    payload: jsonb("payload"),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+    deviceId: text("device_id"),
+  },
+  (t) => [
+    index("sync_changes_business_id_idx").on(t.businessId, t.id),
+    index("sync_changes_record_idx").on(t.tableName, t.recordId),
+  ],
+);
+
+export const syncCursors = pgTable(
+  "sync_cursors",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    deviceId: text("device_id").notNull(),
+    lastChangeId: bigint("last_change_id", { mode: "bigint" }).notNull().default(sql`0`),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("sync_cursors_business_device_uq").on(t.businessId, t.deviceId),
+    index("sync_cursors_business_idx").on(t.businessId),
+  ],
+);
+
+export const cloudBackupSettings = pgTable(
+  "cloud_backup_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    autoSync: boolean("auto_sync").notNull().default(true),
+    autoBackup: boolean("auto_backup").notNull().default(true),
+    backupIntervalHours: integer("backup_interval_hours").notNull().default(24),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    lastBackupAt: timestamp("last_backup_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("cloud_backup_settings_business_uq").on(t.businessId)],
+);
+
+export const cloudBackups = pgTable(
+  "cloud_backups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    kind: text("kind").notNull().default("manual"),
+    status: text("status").notNull().default("ready"),
+    formatVersion: integer("format_version").notNull().default(1),
+    sizeBytes: bigint("size_bytes", { mode: "bigint" }).notNull().default(sql`0`),
+    checksum: text("checksum").notNull(),
+    storagePath: text("storage_path"),
+    data: jsonb("data"),
+    metadata: jsonb("metadata"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    restoredAt: timestamp("restored_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("cloud_backups_business_created_idx").on(t.businessId, t.createdAt),
+    index("cloud_backups_user_created_idx").on(t.userId, t.createdAt),
+    uniqueIndex("cloud_backups_checksum_uq").on(t.businessId, t.checksum),
   ],
 );
 
